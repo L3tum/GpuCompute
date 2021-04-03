@@ -13,7 +13,7 @@ namespace GpuCompute
         {
             // RGBA
             new Solid((int) SolidType.SPHERE, 0.4f, new Float3(-1, 0, 0), new Float4(1f, 0f, 0f, 1f), 0.0f, 0f, 0),
-            new Solid((int) SolidType.SPHERE, 0.4f, Float3.Zero, new Float4(0f, 1f, 0f, 1f), 0.0f, 0f, 1),
+            new Solid((int) SolidType.SPHERE, 0.4f, Float3.Zero, new Float4(0f, 1f, 0f, 1f), 0.5f, 0f, 1),
             new Solid((int) SolidType.SPHERE, 0.4f, Float3.UnitX, new Float4(0f, 0f, 1f, 1f), 0.0f, 0f, 2),
             new Solid((int) SolidType.SPHERE, 0.4f, new Float3(0, 2, -1), new Float4(1f, 1f, 1f, 1f), 0.0f, 1.0f, 3)
         };

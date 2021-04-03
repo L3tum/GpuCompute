@@ -150,6 +150,23 @@ namespace GpuCompute
             return Hlsl.Max(MINIMUM_ILLUMINATION, brightness);
         }
 
+        private float GetSpecularBrightness(RayHit hit)
+        {
+            float specularFactor = 0.0f;
+            Float3 cameraDirection = Vector3.Normalize(Position - hit.HitPosition);
+
+            for (int i = 0; i < LightsLength; i++)
+            {
+                Solid light = Lights[i];
+                Float3 lightDirection = Vector3.Normalize(hit.HitPosition - light.Position);
+                Float3 lightReflectionVector =
+                    lightDirection - hit.Normal * (2.0f * Hlsl.Dot(lightDirection, hit.Normal));
+                specularFactor += Hlsl.Max(0, Hlsl.Min(1, Hlsl.Dot(lightReflectionVector, cameraDirection)));
+            }
+
+            return Hlsl.Pow(specularFactor, 2) * hit.Solid.Reflectivity;
+        }
+
         private Float4 ComputePixelInfo(float u, float v)
         {
             Ray ray = GetRay(u, v);
@@ -159,9 +176,8 @@ namespace GpuCompute
             {
                 float emission = GetBrightnessFromLights(hit);
                 Float4 color = hit.Solid.Color;
-                color.X = Hlsl.Min(1, color.X * emission);
-                color.Y = Hlsl.Min(1, color.Y * emission);
-                color.Z = Hlsl.Min(1, color.Z * emission);
+                color.RGB *= emission;
+                color.RGB += GetSpecularBrightness(hit);
                 return color;
             }
 

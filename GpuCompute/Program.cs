@@ -1,4 +1,4 @@
-﻿using GpuCompute.Win32;
+﻿using GpuCompute.Applications;
 
 namespace GpuCompute
 {
@@ -6,8 +6,11 @@ namespace GpuCompute
     {
         private static void Main(string[] args)
         {
-            Win32Application tracer = new RaytracerFactory();
-            Win32ApplicationRunner.Run(tracer);
+            var application = new RaytracerApplication();
+            application.Run();
+
+            // Win32Application tracer = new RaytracerFactory(1920, 1080);
+            // tracer.Run();
 
             // if (File.Exists("output.png"))
             // {

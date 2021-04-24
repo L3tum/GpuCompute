@@ -1,211 +1,323 @@
+using System;
+using System.Linq;
 using System.Numerics;
-using ComputeSharp;
-
-// ReSharper disable UseObjectOrCollectionInitializer
-
-// ReSharper disable RedundantExplicitArrayCreation
-
-// ReSharper disable PatternAlwaysOfType
-
-// ReSharper disable SuggestVarOrType_Elsewhere
-
-// ReSharper disable SuggestVarOrType_BuiltInTypes
-// ReSharper disable SuggestVarOrType_SimpleTypes
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
+using ImGuiNET;
+using Veldrid;
 
 namespace GpuCompute
 {
-    [AutoConstructor]
-    public readonly partial struct Raytracer : IComputeShader
+    public static class Raytracer
     {
-        public readonly IReadWriteTexture2D<Float4> Target;
-        public readonly ReadOnlyBuffer<Solid> Solids;
-        public readonly ReadOnlyBuffer<Solid> Lights;
-        public readonly int SolidsLength;
-        public readonly int LightsLength;
-        public readonly Float3 Position;
-        public readonly float Yaw;
-        public readonly float Pitch;
-        public readonly Float3 EyePosition;
-        public readonly Float4 BackgroundColor;
-        private const float MINIMUM_ILLUMINATION = 0.3f;
+        internal const int BlockWidth = 150;
+        internal const int BlockHeight = 150;
+        internal static bool SpecularLightSampling = Constants.DEFAULT_SPECULAR_SAMPLING;
+        internal static int SkipPixelProbability = Constants.DEFAULT_SKIP_PROBABILITY;
+        internal static Solid[] Solids = null!;
+        internal static ulong RaysPerFrame;
+        internal static Solid[] Lights = null!;
+        internal static RaytracerSettings Settings = RaytracerSettings.Create();
+        internal static RgbaFloat[] FrameBuffer = null!;
+        internal static SceneParams SceneParams;
+        internal static int Width;
+        internal static int Height;
+        internal static float InvertedWidth;
+        internal static float InvertedHeight;
+        internal static int Rows;
+        internal static int Columns;
+        private static Solid emptySolid = new Solid();
+        private static ThreadLocal<RandomHelper>? RandomHelper;
+        private static Vector4 minimumIlluminationNoAlpha;
+        private static Vector4 minimumIlluminationFullAlpha;
 
-        private Float3 RotateYawPitch(Float3 source)
+        internal static void LoadScene(Scene scene)
         {
-            // Convert to radians
-            float yawRads = Hlsl.Radians(Yaw);
-            float pitchRads = Hlsl.Radians(Pitch);
-
-            // Rotate around X axis (pitch)
-            float y = source.Y * Hlsl.Cos(pitchRads) - source.Z * Hlsl.Sin(pitchRads);
-            float z = source.Y * Hlsl.Sin(pitchRads) + source.Z * Hlsl.Cos(pitchRads);
-
-            // Rotate around Y axis (yaw)
-            float x = source.X * Hlsl.Cos(yawRads) + z * Hlsl.Sin(yawRads);
-            z = -source.X * Hlsl.Sin(yawRads) + z * Hlsl.Cos(yawRads);
-
-            return new Float3(x, y, z);
+            SceneParams.Camera = scene.Camera;
+            SceneParams.SphereCount = (uint) scene.Solids.Count;
+            SceneParams.BackgroundColor = scene.BackgroundColor;
+            Solids = scene.Solids.ToArray();
+            Lights = scene.Solids.Where(solid => solid.Emission > 0.0f).ToArray();
+            ThreadPool.SetMaxThreads(Environment.ProcessorCount, 6);
+            ThreadPool.SetMinThreads(Environment.ProcessorCount / 2, 0);
         }
 
-        private Ray GetRay(float u, float v)
+        internal static void RenderSettings()
         {
-            Float3 rayDirection =
-                Vector3.Normalize(RotateYawPitch(Vector3.Normalize(new Float3(u, v, 0) - EyePosition)));
-
-            Ray ray = new Ray();
-            ray.Origin = EyePosition + Position;
-            ray.Direction = rayDirection;
-            return ray;
-        }
-
-        private bool CalculateIntersectionSphere(Solid solid, Ray ray, out Float3 hit)
-        {
-            float t = Hlsl.Dot(solid.Position - ray.Origin, ray.Direction);
-            Float3 p = ray.Origin + ray.Direction * t;
-            float y = Hlsl.Length(solid.Position - p);
-
-            if (y < solid.Radius)
+            if (ImGui.Begin("Settings"))
             {
-                float x = Hlsl.Sqrt(solid.RadiusSquared - y * y);
-                float t1 = t - x;
-                if (t1 > 0)
+                if (ImGui.BeginMenu("Raytracer Settings"))
                 {
-                    hit = ray.Origin + ray.Direction * t1;
-                    return true;
+                    ImGui.Checkbox("Diffuse Light Sampling", ref Settings.DiffuseLightSampling);
+                    ImGui.Checkbox("Sample One Light", ref Settings.DiffuseLightSamplingOneLight);
+                    ImGui.DragInt("Sample Light", ref Settings.DiffuseLightSamplingLight, 1, 0, Lights.Length - 1);
+                    ImGui.Checkbox("Specular Sampling", ref SpecularLightSampling);
+                    ImGui.Checkbox("Randomize Bouncing", ref Settings.RandomizeBounceOnRoughness);
+                    ImGui.Checkbox("Randomize Camera Ray", ref Settings.RandomizeCameraRays);
+                    ImGui.DragInt("Skip Pixel Probability", ref SkipPixelProbability, 1, 0, 50);
+                    ImGui.DragInt("Number of Bounces", ref Settings.MaxBounces, 1, 0, 50);
+                    ImGui.DragInt("Number of Samples", ref Settings.NumberOfSamples, 16, 16, 81920);
+                    ImGui.DragFloat("Minimum Illumination", ref Settings.MinimumIllumination, 0.1f, 0f, 1f);
                 }
             }
 
-            hit = Float3.Zero;
-            return false;
+            minimumIlluminationNoAlpha = new Vector4(Settings.MinimumIllumination, Settings.MinimumIllumination,
+                Settings.MinimumIllumination, 0.0f);
+            minimumIlluminationFullAlpha = new Vector4(Settings.MinimumIllumination, Settings.MinimumIllumination,
+                Settings.MinimumIllumination, 1.0f);
         }
 
-        private bool CalculateIntersection(Solid solid, Ray ray, out Float3 hit)
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        private static bool CastRay(Ray ray, out RayHit rayHit, ref uint rayCount)
         {
-            switch (solid.SolidType)
+            rayCount++;
+            rayHit.HitPosition = Vector3.Zero;
+            rayHit.Normal = Vector3.Zero;
+            rayHit.Solid = emptySolid;
+            rayHit.T = 0;
+            rayHit.Ray = ray;
+            var hit = false;
+            var t = float.MaxValue;
+
+            foreach (var solid in Solids)
             {
-                default:
+                if (Solid.Hit(solid, ray, float.Epsilon, t, out var solidHit))
                 {
-                    return CalculateIntersectionSphere(solid, ray, out hit);
-                }
-            }
-        }
-
-        private Float3 GetNormalAt(Solid solid, Float3 point)
-        {
-            switch (solid.SolidType)
-            {
-                default:
-                {
-                    return Vector3.Normalize(point - solid.Position);
-                }
-            }
-        }
-
-        private bool CastRay(Ray ray, out RayHit rayHit)
-        {
-            rayHit = new RayHit();
-            rayHit.HitPosition = Float3.Zero;
-            rayHit.Normal = Float3.Zero;
-            rayHit.Solid = new Solid();
-            bool hit = false;
-
-            for (int i = 0; i < SolidsLength; i++)
-            {
-                Solid solid = Solids[i];
-                bool hasHit = CalculateIntersection(solid, ray, out Float3 hitPosition);
-
-                if (hasHit)
-                {
-                    if (Hlsl.Length(Hlsl.Distance(rayHit.HitPosition, ray.Origin)) >
-                        Hlsl.Length(Hlsl.Distance(hitPosition, ray.Origin)))
-                    {
-                        rayHit.HitPosition = hitPosition;
-                        rayHit.Normal = GetNormalAt(solid, hitPosition);
-                        rayHit.Solid = solid;
-                        hit = true;
-                    }
+                    rayHit = solidHit;
+                    t = solidHit.T;
+                    hit = true;
                 }
             }
 
             return hit;
         }
 
-        private float GetBrightnessFromLights(RayHit hit)
+        [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+        private static Vector4 SampleLight(RayHit hit, Solid light, ref uint rayCount)
         {
-            float brightness = 0.0f;
+            Ray ray;
+            ray.Origin = light.Position;
+            ray.Direction = Vector3.Normalize(light.Position - hit.HitPosition);
+            var hasHit = CastRay(ray, out var lightHit, ref rayCount);
 
-            for (int i = 0; i < LightsLength; i++)
+            if (hasHit && lightHit.Solid.SolidId == light.SolidId)
             {
-                Solid light = Lights[i];
-                Ray ray = new Ray();
-                ray.Origin = light.Position;
-                ray.Direction = Vector3.Normalize(hit.HitPosition - light.Position);
-                bool hasHit = CastRay(ray, out RayHit lightHit);
+                // return light.Color * (Vector3.Dot(hit.Normal, light.Position - hit.HitPosition) * light.Emission);
+                return light.Color * light.Emission * Vector3.Dot(ray.Direction, hit.Normal);
+                // return light.Color * light.Emission / (4 * MathF.PI * (hit.HitPosition - light.Position).Length());
+            }
 
-                if (hasHit && lightHit.Solid.SolidId == hit.Solid.SolidId)
+            return Vector4.Zero;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        private static Vector4 GetBrightnessFromLights(RayHit hit, ref uint rayCount)
+        {
+            var brightness = Vector4.Zero;
+
+            if (Settings.DiffuseLightSamplingOneLight)
+            {
+                if (Settings.DiffuseLightSamplingLight < Lights.Length)
                 {
-                    brightness += Hlsl.Dot(hit.Normal, light.Position - hit.HitPosition);
+                    var light = Lights[Settings.DiffuseLightSamplingLight];
+                    brightness += SampleLight(hit, light, ref rayCount);
                 }
-            }
-
-            return Hlsl.Max(MINIMUM_ILLUMINATION, brightness);
-        }
-
-        private float GetSpecularBrightness(RayHit hit)
-        {
-            float specularFactor = 0.0f;
-            Float3 cameraDirection = Vector3.Normalize(Position - hit.HitPosition);
-
-            for (int i = 0; i < LightsLength; i++)
-            {
-                Solid light = Lights[i];
-                Float3 lightDirection = Vector3.Normalize(hit.HitPosition - light.Position);
-                Float3 lightReflectionVector =
-                    lightDirection - hit.Normal * (2.0f * Hlsl.Dot(lightDirection, hit.Normal));
-                specularFactor += Hlsl.Max(0, Hlsl.Min(1, Hlsl.Dot(lightReflectionVector, cameraDirection)));
-            }
-
-            return Hlsl.Pow(specularFactor, 2) * hit.Solid.Reflectivity;
-        }
-
-        private Float4 ComputePixelInfo(float u, float v)
-        {
-            Ray ray = GetRay(u, v);
-            bool hasHit = CastRay(ray, out RayHit hit);
-
-            if (hasHit)
-            {
-                float emission = GetBrightnessFromLights(hit);
-                Float4 color = hit.Solid.Color;
-                color.RGB *= emission;
-                color.RGB += GetSpecularBrightness(hit);
-                return color;
-            }
-
-            return BackgroundColor;
-        }
-
-        private Float2 GetNormalizedScreenCoordinates(int x, int y, int width, int height)
-        {
-            float u = 0, v = 0;
-            if (width > height)
-            {
-                u = (float) (x - width / 2 + height / 2) / height * 2 - 1;
-                v = -((float) y / height * 2 - 1);
             }
             else
             {
-                u = (float) x / width * 2 - 1;
-                v = -((float) (y - height / 2 + width / 2) / width * 2 - 1);
+                foreach (var light in Lights)
+                {
+                    brightness += SampleLight(hit, light, ref rayCount);
+                }
             }
 
-            return new Float2(u, v);
+            return Vector4.Max(brightness, minimumIlluminationNoAlpha);
         }
 
-        public void Execute()
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        private static float GetSpecularBrightness(RayHit hit)
         {
-            Float2 screenUv = GetNormalizedScreenCoordinates(ThreadIds.X, ThreadIds.Y, Target.Width, Target.Height);
+            var specularFactor = 0.0f;
+            var cameraDirection = Vector3.Normalize(SceneParams.Camera.Origin - hit.HitPosition);
 
-            Target[ThreadIds.XY] = ComputePixelInfo(screenUv.X, screenUv.Y);
+            foreach (var light in Lights)
+            {
+                var lightDirection = Vector3.Normalize(hit.HitPosition - light.Position);
+                var lightReflectionVector =
+                    lightDirection - hit.Normal * (2.0f * Vector3.Dot(lightDirection, hit.Normal));
+                specularFactor += MathF.Max(0, MathF.Min(1, Vector3.Dot(lightReflectionVector, cameraDirection)));
+            }
+
+            return MathF.Pow(specularFactor, 2) * hit.Solid.Reflectivity;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        private static Vector4 GetColorFromBounce(RayHit hit, ref uint rayCount, ref RandomHelper randomHelper,
+            int rayDepth = 0)
+        {
+            rayDepth++;
+            if (rayDepth > Settings.MaxBounces)
+            {
+                return Vector4.Zero;
+            }
+
+            Ray ray;
+            ray.Origin = hit.HitPosition;
+            // ray.Direction = hit.HitPosition + hit.Normal +
+            //                 (Settings.RandomizeBounceOnRoughness
+            //                     ? RandUtil.RandomInUnitSphere(ref randomHelper) * hit.Solid.Roughness
+            //                     : Vector3.Zero) -
+            //                 hit.HitPosition;
+            ray.Direction = Vector3.Reflect(hit.Ray.Direction, hit.Normal + (Settings.RandomizeBounceOnRoughness
+                ? RandUtil.RandomInUnitSphere(ref randomHelper) * hit.Solid.Roughness
+                : Vector3.Zero));
+            return GetColorForRay(ray, ref rayCount, ref randomHelper, rayDepth);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        private static Vector4 GetColorForRay(Ray ray, ref uint rayCount, ref RandomHelper randomHelper,
+            int rayDepth = 0)
+        {
+            var color = Vector4.Zero;
+
+            if (rayDepth <= Settings.MaxBounces && CastRay(ray, out var hit, ref rayCount))
+            {
+                // Explicit Light sampling
+                var brightness = Settings.DiffuseLightSampling
+                    ? GetBrightnessFromLights(hit, ref rayCount)
+                    : minimumIlluminationFullAlpha;
+
+                // Bounce the ray
+                var bounceColor = GetColorFromBounce(hit, ref rayCount, ref randomHelper, rayDepth);
+
+                // Specular brightness
+                var specularBrightness = rayDepth == 0 && SpecularLightSampling ? GetSpecularBrightness(hit) : 0.0f;
+
+                // Add the samples
+                var hitColor = hit.Solid.Color * (brightness / MathF.PI);
+                hitColor += bounceColor;
+                hitColor += new Vector4(specularBrightness, specularBrightness, specularBrightness, 0f);
+                // The emission by the light itself (if it is one)
+                hitColor += hit.Solid.Color * hit.Solid.Emission;
+
+                color += hitColor;
+
+                if (rayDepth > 0)
+                {
+                    color *= 1f - hit.Solid.Roughness;
+                }
+            }
+            else
+            {
+                color += SceneParams.BackgroundColor;
+            }
+
+            return color;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+        internal static void RenderCpuNew()
+        {
+            var frameRays = 0u;
+            var numberOfBlocks = Rows * Columns;
+
+            using var countdownEvent = new CountdownEvent(numberOfBlocks);
+
+            for (var y = 0; y < Rows; y++)
+            {
+                var startHeight = y * BlockHeight;
+                var endHeight = (y + 1) * BlockHeight;
+                endHeight = endHeight > Height ? Height : endHeight;
+
+                for (var x = 0; x < Columns; x++)
+                {
+                    var startWidth = x * BlockWidth;
+                    var endWidth = (x + 1) * BlockWidth;
+                    endWidth = endWidth > Width ? Width : endWidth;
+
+                    ThreadPool.QueueUserWorkItem(data =>
+                    {
+                        var valueData = (ValueTuple<int, int, int, int>) data!;
+                        var (x1, x2, y1, y2) = valueData;
+                        var rayCount = 0u;
+                        RandomHelper ??=
+                            new ThreadLocal<RandomHelper>(() => new RandomHelper((uint) new Random().Next()));
+                        var randomHelper = RandomHelper.Value;
+
+                        for (var ya = (uint) y1; ya < y2; ya++)
+                        {
+                            var v = ya * InvertedHeight;
+
+                            for (var xa = (uint) x1; xa < x2; xa++)
+                            {
+                                randomHelper.Seed(xa ^ ya);
+
+                                if (SkipPixelProbability > 0 &&
+                                    randomHelper.GetRandomBetween(100, 0) < SkipPixelProbability)
+                                {
+                                    continue;
+                                }
+
+                                var u = xa * InvertedWidth;
+                                var ray = Camera.GetRay(SceneParams.Camera, u, v);
+                                var color = Vector4.Zero;
+                                for (var i = 0; i < Settings.NumberOfSamples; i++)
+                                {
+                                    color += GetColorForRay(ray, ref rayCount, ref randomHelper);
+                                }
+
+                                FrameBuffer[ya * Width + xa] = new RgbaFloat(color / Settings.NumberOfSamples);
+                            }
+                        }
+
+                        Interlocked.Add(ref frameRays, rayCount);
+                        countdownEvent.Signal();
+                    }, (startWidth, endWidth, startHeight, endHeight));
+                }
+            }
+
+            countdownEvent.Wait();
+
+            RaysPerFrame = frameRays;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        internal static void RenderCpu(int width, int height)
+        {
+            var frameRays = 0u;
+            var invertedWidth = 1f / width;
+            var invertedHeight = 1f / height;
+
+            Parallel.For(0, height, y =>
+            {
+                var rayCount = 0u;
+                var randomHelper = new RandomHelper((uint) (y ^ DateTime.Now.Millisecond));
+
+                for (uint x = 0; x < width; x++)
+                {
+                    randomHelper.Seed(x);
+                    if (randomHelper.GetRandomBetween(100, 0) < SkipPixelProbability)
+                    {
+                        continue;
+                    }
+
+                    var u = x * invertedWidth;
+                    var v = y * invertedHeight;
+                    var ray = Camera.GetRay(SceneParams.Camera, u, v);
+                    var color = Vector4.Zero;
+                    for (var i = 0; i < Settings.NumberOfSamples; i++)
+                    {
+                        color += GetColorForRay(ray, ref rayCount, ref randomHelper);
+                    }
+
+                    FrameBuffer[y * width + x] = new RgbaFloat(color / Settings.NumberOfSamples);
+                }
+
+                Interlocked.Add(ref frameRays, rayCount);
+            });
+
+            RaysPerFrame = frameRays;
         }
     }
 }

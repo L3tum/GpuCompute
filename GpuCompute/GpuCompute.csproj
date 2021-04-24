@@ -2,24 +2,58 @@
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net5.0</TargetFramework>
+        <TargetFramework>net6.0</TargetFramework>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <Nullable>enable</Nullable>
+        <ShaderContentIncludePath>Shaders</ShaderContentIncludePath>
+        <ShaderOutputPath>$(BaseIntermediateOutputPath)Shaders</ShaderOutputPath>
+        <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
+        <EnableUnsafeUTF7Encoding>false</EnableUnsafeUTF7Encoding>
+        <InvariantGlobalization>true</InvariantGlobalization>
+        <Configurations>Debug;Release;Release AOT</Configurations>
+        <Platforms>AnyCPU</Platforms>
     </PropertyGroup>
 
     <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
-      <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
-      <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <!-- In Debug mode, preserve all of the shader code, not just the compiled bytecode. -->
+        <ListAllShaderPaths>true</ListAllShaderPaths>
     </PropertyGroup>
 
-    <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
-      <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
-      <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PropertyGroup Condition="'$(Configuration)' == 'Release' Or '$(Configuration)' == 'Release AOT'">
+        <DebuggerSupport>false</DebuggerSupport>
+        <IlcOptimizationPreference>Speed</IlcOptimizationPreference>
+        <IlcGenerateStackTraceData>false</IlcGenerateStackTraceData>
+        <IlcFoldIdenticalMethodBodies>true</IlcFoldIdenticalMethodBodies>
+        <IlcDisableUnhandledExceptionExperience>true</IlcDisableUnhandledExceptionExperience>
+        <UseSystemResourceKeys>true</UseSystemResourceKeys>
+        <Optimize>true</Optimize>
     </PropertyGroup>
+
+    <PropertyGroup Condition="'$(Configuration)' == 'Release AOT'">
+        <IlcDisableReflection>true</IlcDisableReflection>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(Configuration)' == 'Release AOT'">
+        <PackageReference Include="Microsoft.DotNet.ILCompiler.LLVM" Version="6.0.0-preview.2.21171.2" />
+        <AppContextSwitchOverrides Include="Switch.System.Reflection.Disabled.DoNotThrowForAssembly" />
+        <AppContextSwitchOverrides Include="Switch.System.Reflection.Disabled.DoNotThrowForAttributes" />
+        <!-- Generate direct PInvoke calls for everything in __Internal -->
+        <!-- This option is replicates Mono AOT behavior that generates direct PInvoke calls for __Internal -->
+        <DirectPInvoke Include="__Internal" />
+    </ItemGroup>
 
     <ItemGroup>
-      <PackageReference Include="ComputeSharp" Version="2.0.0" />
-      <PackageReference Include="System.Drawing.Common" Version="5.0.1" />
+        <PackageReference Include="ImGui.NET" Version="1.78.0" />
+        <PackageReference Include="ShaderGen.Build" Version="1.2.0-beta3" PrivateAssets="All" />
+        <PackageReference Include="ShaderGen.Primitives" Version="1.2.0-beta3" />
+        <PackageReference Include="System.Drawing.Common" Version="5.0.1" />
+        <PackageReference Include="Veldrid" Version="4.8.0" />
+        <PackageReference Include="Veldrid.ImGui" Version="5.72.0" />
+        <PackageReference Include="Veldrid.SPIRV" Version="1.0.14" />
+        <PackageReference Include="Veldrid.StartupUtilities" Version="4.8.0" />
+        <PackageReference Include="Veldrid.Utilities" Version="4.8.0" />
     </ItemGroup>
 
 </Project>

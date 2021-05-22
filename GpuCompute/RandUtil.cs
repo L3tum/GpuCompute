@@ -6,19 +6,22 @@ namespace GpuCompute
 {
     public static class RandUtil
     {
-        // public static uint XorShift(ref uint state)
-        // {
-        //     state ^= state << 13;
-        //     state ^= state >> 17;
-        //     state ^= state << 15;
-        //     return state;
-        // }
+        public static uint XorShift(uint state)
+        {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 15;
+            return state;
+        }
+
         //
         // public static float RandomFloat(ref uint state)
         // {
         //     return XorShift(ref state) * (1f / 4294967296f);
         // }
         //
+        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         public static Vector3 RandomInUnitDisk(ref RandomHelper randomHelper)
         {
             Vector3 p;
@@ -43,6 +46,7 @@ namespace GpuCompute
         // }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         public static Vector3 RandomInUnitSphere(ref RandomHelper randomHelper)
         {
             Vector3 ret;

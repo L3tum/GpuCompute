@@ -40,8 +40,10 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         private static bool HitSphere(Solid solid, Ray ray, float tMin, float tMax, out RayHit hit)
         {
+            Unsafe.SkipInit(out hit);
             hit.Ray = ray;
             var oc = ray.Origin - solid.Position;
             var a = Vector3.Dot(ray.Direction, ray.Direction);
@@ -75,15 +77,12 @@ namespace GpuCompute
                     return true;
                 }
             }
-
-            hit.HitPosition = Vector3.Zero;
-            hit.Normal = Vector3.Zero;
-            hit.Solid = new Solid();
-            hit.T = 0;
+            
             return false;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         public static bool Hit(Solid solid, Ray ray, float tMin, float tMax, out RayHit hit)
         {
             return solid.SolidType switch

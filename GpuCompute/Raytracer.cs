@@ -3,7 +3,6 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading;
-using System.Threading.Tasks;
 using ImGuiNET;
 using Veldrid;
 
@@ -27,7 +26,6 @@ namespace GpuCompute
         internal static float InvertedHeight;
         internal static int Rows;
         internal static int Columns;
-        private static Solid emptySolid = new Solid();
         private static ThreadLocal<RandomHelper>? RandomHelper;
         private static Vector4 minimumIlluminationNoAlpha;
         private static Vector4 minimumIlluminationFullAlpha;
@@ -69,14 +67,11 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         private static bool CastRay(Ray ray, out RayHit rayHit, ref uint rayCount)
         {
+            Unsafe.SkipInit(out rayHit);
             rayCount++;
-            rayHit.HitPosition = Vector3.Zero;
-            rayHit.Normal = Vector3.Zero;
-            rayHit.Solid = emptySolid;
-            rayHit.T = 0;
-            rayHit.Ray = ray;
             var hit = false;
             var t = float.MaxValue;
 
@@ -94,6 +89,7 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+        [SkipLocalsInit]
         private static Vector4 SampleLight(RayHit hit, Solid light, ref uint rayCount)
         {
             Ray ray;
@@ -112,6 +108,7 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         private static Vector4 GetBrightnessFromLights(RayHit hit, ref uint rayCount)
         {
             var brightness = Vector4.Zero;
@@ -136,6 +133,7 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         private static float GetSpecularBrightness(RayHit hit)
         {
             var specularFactor = 0.0f;
@@ -153,6 +151,7 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         private static Vector4 GetColorFromBounce(RayHit hit, ref uint rayCount, ref RandomHelper randomHelper,
             int rayDepth = 0)
         {
@@ -176,6 +175,7 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         private static Vector4 GetColorForRay(Ray ray, ref uint rayCount, ref RandomHelper randomHelper,
             int rayDepth = 0)
         {
@@ -217,6 +217,7 @@ namespace GpuCompute
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+        [SkipLocalsInit]
         internal static void RenderCpuNew()
         {
             var frameRays = 0u;
@@ -278,44 +279,6 @@ namespace GpuCompute
             }
 
             countdownEvent.Wait();
-
-            RaysPerFrame = frameRays;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
-        internal static void RenderCpu(int width, int height)
-        {
-            var frameRays = 0u;
-            var invertedWidth = 1f / width;
-            var invertedHeight = 1f / height;
-
-            Parallel.For(0, height, y =>
-            {
-                var rayCount = 0u;
-                var randomHelper = new RandomHelper((uint) (y ^ DateTime.Now.Millisecond));
-
-                for (uint x = 0; x < width; x++)
-                {
-                    randomHelper.Seed(x);
-                    if (randomHelper.GetRandomBetween(100, 0) < SkipPixelProbability)
-                    {
-                        continue;
-                    }
-
-                    var u = x * invertedWidth;
-                    var v = y * invertedHeight;
-                    var ray = Camera.GetRay(SceneParams.Camera, u, v);
-                    var color = Vector4.Zero;
-                    for (var i = 0; i < Settings.NumberOfSamples; i++)
-                    {
-                        color += GetColorForRay(ray, ref rayCount, ref randomHelper);
-                    }
-
-                    FrameBuffer[y * width + x] = new RgbaFloat(color / Settings.NumberOfSamples);
-                }
-
-                Interlocked.Add(ref frameRays, rayCount);
-            });
 
             RaysPerFrame = frameRays;
         }

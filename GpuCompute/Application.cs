@@ -16,7 +16,7 @@ namespace GpuCompute
 
         protected readonly List<CommandList> CommandLists;
 
-        protected readonly bool DrawModeCpu = true;
+        protected readonly bool DrawModeCpu = false;
         protected float ElapsedSecondsBetweenRenders;
         protected Stopwatch FrameStopwatch = null!;
 

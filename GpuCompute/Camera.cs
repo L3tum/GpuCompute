@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
+// ReSharper disable SuggestVarOrType_SimpleTypes
 
 namespace GpuCompute
 {
@@ -26,7 +27,7 @@ namespace GpuCompute
         public static Camera Create(Vector3 origin, Vector3 lookAt, Vector3 up, float vfov, float aspect,
             float aperture, float focusDist)
         {
-            var cam = new Camera();
+            Camera cam = new Camera();
             cam.LensRadius = aperture / 2f;
             cam.Origin = origin;
             cam.LookAt = lookAt;
@@ -39,14 +40,13 @@ namespace GpuCompute
             Recalculate(ref cam);
             return cam;
         }
-
+        
         [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+        [SkipLocalsInit]
         public static Ray GetRay(Camera cam, float s, float t)
         {
-            var rd = cam.LensRadius * (Raytracer.Settings.RandomizeCameraRays
-                ? RandUtil.RandomInUnitDisk(ref cam.randomHelper)
-                : Vector3.One);
-            var offset = cam.Right * rd.X + cam.Up * rd.Y;
+            Vector3 rd = cam.LensRadius * Vector3.One;
+            Vector3 offset = cam.Right * rd.X + cam.Up * rd.Y;
             return Ray.Create(
                 cam.Origin + offset,
                 cam.LowerLeftCorner + s * cam.Horizontal + t * cam.Vertical - cam.Origin - offset);

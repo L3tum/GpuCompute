@@ -9,5 +9,6 @@ namespace GpuCompute
         public Camera Camera;
         public uint SphereCount;
         public Vector4 BackgroundColor;
+        public uint FrameCount;
     }
 }

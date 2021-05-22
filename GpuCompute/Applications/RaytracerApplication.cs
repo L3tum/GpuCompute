@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -38,7 +39,7 @@ namespace GpuCompute.Applications
         private void Dispose()
         {
             graphicsPipeline.Dispose();
-            graphicsSet.Dispose();                  
+            graphicsSet.Dispose();
             textureView.Dispose();
             transferTexture.Dispose();
             commandList.Dispose();
@@ -47,24 +48,14 @@ namespace GpuCompute.Applications
         private void OnResized()
         {
             isResizing = true;
-            if (transferTexture == null || transferTexture.Width != Window.Width ||
-                transferTexture.Height != Window.Height)
-            {
-                if (transferTexture != null)
-                {
-                    Dispose();
-                }
-
-                CreateDeviceResources();
-                Raytracer.Width = Window.Width;
-                Raytracer.Height = Window.Height;
-                Raytracer.InvertedWidth = 1f / Window.Width;
-                Raytracer.InvertedHeight = 1f / Window.Height;
-                Raytracer.Rows = (int) Math.Round(Window.Height / (float) Raytracer.BlockHeight, 0,
-                    MidpointRounding.ToPositiveInfinity);
-                Raytracer.Columns = (int) Math.Round(Window.Width / (float) Raytracer.BlockWidth, 0,
-                    MidpointRounding.ToPositiveInfinity);
-            }
+            Raytracer.Width = Window.Width;
+            Raytracer.Height = Window.Height;
+            Raytracer.InvertedWidth = 1f / Window.Width;
+            Raytracer.InvertedHeight = 1f / Window.Height;
+            Raytracer.Rows = (int) Math.Round(Window.Height / (float) Raytracer.BlockHeight, 0,
+                MidpointRounding.ToPositiveInfinity);
+            Raytracer.Columns = (int) Math.Round(Window.Width / (float) Raytracer.BlockWidth, 0,
+                MidpointRounding.ToPositiveInfinity);
 
             isResizing = false;
         }
@@ -82,6 +73,7 @@ namespace GpuCompute.Applications
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        [SkipLocalsInit]
         protected override void Update(InputSnapshot snapshot, float elapsedSeconds)
         {
             base.Update(snapshot, elapsedSeconds);
@@ -144,6 +136,7 @@ namespace GpuCompute.Applications
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        [SkipLocalsInit]
         protected override void Render()
         {
             if (isResizing)
@@ -167,15 +160,15 @@ namespace GpuCompute.Applications
                         fixed (RgbaFloat* pixelDataPtr = Raytracer.FrameBuffer)
                         {
                             GraphicsDevice.UpdateTexture(transferTexture, (IntPtr) pixelDataPtr,
-                                (uint) (transferTexture.Width * transferTexture.Height * (uint) sizeof(RgbaFloat)), 0, 0, 0,
-                                (uint) transferTexture.Width, (uint) transferTexture.Height, 1, 0, 0);
+                                transferTexture.Width * transferTexture.Height * (uint) sizeof(RgbaFloat), 0, 0, 0,
+                                transferTexture.Width, transferTexture.Height, 1, 0, 0);
                         }
                     }
                 }
             }
             else
             {
-                commandList.ClearColorTarget(0, RgbaFloat.Black);
+                RenderGpu();
             }
 
             commandList.SetFramebuffer(GraphicsDevice.MainSwapchain.Framebuffer);
@@ -192,6 +185,20 @@ namespace GpuCompute.Applications
             }
 
             base.Render();
+        }
+
+        private void RenderGpu()
+        {
+            commandList.UpdateBuffer(sceneParamsBuffer, 0, ref Raytracer.SceneParams);
+            commandList.UpdateBuffer(rayCountBuffer, 0, new Vector4());
+            commandList.SetPipeline(computePipeline);
+            commandList.SetComputeResourceSet(0, computeSet);
+            Debug.Assert(Window.Width % 16 == 0 && Window.Height % 16 == 0);
+            var xCount = (uint) Math.Ceiling(Window.Width / 16d);
+            var yCount = (uint) Math.Ceiling(Window.Height / 16d);
+            commandList.Dispatch(xCount, yCount, 1);
+            commandList.CopyBuffer(rayCountBuffer, 0, rayCountReadback, 0, rayCountBuffer.SizeInBytes);
+            Raytracer.SceneParams.FrameCount++;
         }
 
         private void CreateDeviceResources()
@@ -245,7 +252,7 @@ namespace GpuCompute.Applications
 
             sceneParamsBuffer = factory.CreateBuffer(
                 new BufferDescription(
-                    (uint) Unsafe.SizeOf<SceneParams>(),
+                    GetConstantSize<SceneParams>(),
                     BufferUsage.UniformBuffer
                 ));
             GraphicsDevice.UpdateBuffer(sceneParamsBuffer, 0, Raytracer.SceneParams);
@@ -267,12 +274,24 @@ namespace GpuCompute.Applications
                 rayCountBuffer));
 
             computePipeline = factory.CreateComputePipeline(new ComputePipelineDescription(
-                factory.CreateShader(new ShaderDescription(ShaderStages.Compute, LoadShaderBytes("RayTracer-compute"),
-                    "CS")),
+                factory.CreateFromSpirv(new ShaderDescription(ShaderStages.Compute,
+                    LoadShaderBytes("Raytracer-compute"), "main")),
                 computeLayout,
                 16,
                 16,
                 1));
+        }
+
+        private uint GetConstantSize<T>()
+        {
+            var size = (uint) Unsafe.SizeOf<T>();
+
+            if (size % 16 != 0)
+            {
+                size = size - size % 16u + 16u * (size % 16u == 0u ? 0u : 1u);
+            }
+
+            return size;
         }
     }
 }
